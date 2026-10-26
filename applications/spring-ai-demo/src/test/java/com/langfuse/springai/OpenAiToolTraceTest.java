@@ -71,6 +71,7 @@ class OpenAiToolTraceTest {
 
     @Test
     void realChatClientExecutesToolInsideRootTrace() {
+        int requestsBefore = REQUESTS.get();
         var response = restTemplate.postForEntity(
                 "/v1/chat",
                 new ChatRequest(
@@ -82,7 +83,7 @@ class OpenAiToolTraceTest {
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().answer()).contains("SHIPPED");
-        assertThat(REQUESTS.get()).isEqualTo(2);
+        assertThat(REQUESTS.get() - requestsBefore).isEqualTo(2);
 
         Observation.Context root = observations.find("handle-chat");
         Observation.Context tool = observations.findByPrefix("spring.ai.tool");
@@ -107,8 +108,32 @@ class OpenAiToolTraceTest {
     }
 
     private static void handleChat(HttpExchange exchange) throws IOException {
+        // The demo also calls the model once on startup, so pick the response
+        // from the request body instead of relying on a global call counter.
+        String requestBody = new String(
+                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        boolean toolsAvailable = requestBody.contains("\"tools\"");
+        boolean isSecondRound = requestBody.contains("\"tool_call_id\"");
+        REQUESTS.incrementAndGet();
+
         byte[] response;
-        if (REQUESTS.getAndIncrement() == 0) {
+        if (!toolsAvailable) {
+            // The startup call registers no tool, so answer with plain text.
+            response = """
+                    {
+                      "id": "chatcmpl-plain",
+                      "object": "chat.completion",
+                      "created": 1699999999,
+                      "model": "test-model",
+                      "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "java"},
+                        "finish_reason": "stop"
+                      }],
+                      "usage": {"prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9}
+                    }
+                    """.getBytes(StandardCharsets.UTF_8);
+        } else if (!isSecondRound) {
             response = """
                     {
                       "id": "chatcmpl-tool",
